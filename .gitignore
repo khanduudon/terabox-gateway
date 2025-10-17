@@ -140,3 +140,6 @@ temp/
 logs/
 *.log
 *.log.*
+
+# Custom config files
+cookies.json

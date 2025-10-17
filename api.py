@@ -1,12 +1,53 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
+
 import aiohttp
+
 import asyncio
+
 import logging
+
+import os
 from urllib.parse import parse_qs, urlparse
+
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Union, Set
 
 
 app = Flask(__name__, static_folder="public", static_url_path="/public")
+
+
+# Basic CORS for browser clients (no extra dependency)
+@app.after_request
+def add_cors_headers(resp: Response) -> Response:
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return resp
+
+
+ALLOWED_HOSTS: set[str] = {
+    "terabox.app",
+    "www.terabox.app",
+    "teraboxshare.com",
+    "www.teraboxshare.com",
+    "terabox.com",
+    "www.terabox.com",
+    "1024terabox.com",
+    "www.1024terabox.com",
+}
+
+
+def is_valid_share_url(u: str) -> bool:
+    try:
+        parsed = urlparse(u)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.netloc.lower()
+        if host not in ALLOWED_HOSTS:
+            return False
+        return ("/s/" in parsed.path) or ("surl=" in (parsed.query or ""))
+    except Exception:
+        return False
 
 
 logging.basicConfig(
@@ -22,18 +63,47 @@ except Exception:
     pass
 
 
-# WORKING COOKIES - Update these regularly from browser
-cookies = {
-    "PANWEB": "1",
-    "__bid_n": "199f06ecf83c6517974207",
-    "ndus": "YdPCtvYteHui3XC6demNk-M2HgRzVrnh0txZQG6X",
-    "csrfToken": "af9aD-FiuCbvJkukHHhOA8XV",
-    "browserid": "BNT7BllyBZJWHfvSoVw8hXcWCBzRNSUvSABzO7pq-zj9qWDBOBHoyz--pRg=",
-    "lang": "en",
-    "ndut_fmt": "808CED9ACB7ADD765BADAF30B1F8220BB41B8E2C016E523E3D37B486C74124DD",
-}
+# You can override cookies via environment variables or a `cookies.json` file.
+# - TERABOX_COOKIES_JSON: A JSON string containing cookie key-value pairs.
+# - TERABOX_COOKIES_FILE: The path to a JSON file with cookies.
+#   If not set, the application defaults to loading `cookies.json`.
 
-headers = {
+
+def load_cookies() -> dict[str, str]:
+    """Load cookies from environment variables or a local file."""
+    raw = os.getenv("TERABOX_COOKIES_JSON")
+    # Default to 'cookies.json' if the env var is not set
+    file_path = os.getenv("TERABOX_COOKIES_FILE", "cookies.json")
+    data = None
+
+    if raw:
+        try:
+            import json
+
+            data = json.loads(raw)
+        except Exception as e:
+            logging.warning(f"Failed to parse TERABOX_COOKIES_JSON: {e}")
+
+    if not data and file_path:
+        try:
+            import json
+
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            # This is not an error if cookies are provided via other means
+            pass
+        except Exception as e:
+            logging.warning(f"Failed to read '{file_path}': {e}")
+
+    if isinstance(data, dict):
+        return {k: str(v) for k, v in data.items()}
+
+    logging.warning("Cookies not loaded. API requests will likely fail.")
+    return {}
+
+
+headers: Dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
     "Accept": "*/*",
     "Accept-Language": "en-US,en;q=0.9",
@@ -41,7 +111,7 @@ headers = {
 }
 
 
-def find_between(string, start, end):
+def find_between(string: str, start: str, end: str) -> Optional[str]:
     """Extract substring between two markers"""
     start_index = string.find(start)
     if start_index == -1:
@@ -66,7 +136,7 @@ def extract_thumbnail_dimensions(url: str) -> str:
     return "original"
 
 
-async def get_formatted_size(size_bytes):
+async def get_formatted_size(size_bytes: Union[int, str]) -> str:
     """Convert bytes to human-readable format"""
     try:
         size_bytes = int(size_bytes)
@@ -89,9 +159,12 @@ async def get_formatted_size(size_bytes):
         return "Unknown"
 
 
-async def fetch_download_link(url, password=""):
+async def fetch_download_link(
+    url: str, password: str = ""
+) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
     """Fetch file information from TeraBox share link"""
     try:
+        cookies = load_cookies()
         async with aiohttp.ClientSession(cookies=cookies, headers=headers) as session:
             # Step 1: Get the share page and extract tokens
             logging.info(f"Fetching share page: {url}")
@@ -127,7 +200,6 @@ async def fetch_download_link(url, password=""):
                 session_headers = headers.copy()
                 session_headers["Referer"] = request_url
 
-                # Step 2: Fetch file list
                 params = {
                     "app_id": "250528",
                     "web": "1",
@@ -143,6 +215,8 @@ async def fetch_download_link(url, password=""):
                     "shorturl": surl,
                     "root": "1",
                 }
+                if password:
+                    params["pwd"] = password
 
                 list_url = "https://www.terabox.app/share/list"
                 logging.info(f"Fetching file list from: {list_url}")
@@ -217,7 +291,7 @@ async def fetch_download_link(url, password=""):
         return {"error": str(e), "errno": -1}
 
 
-async def format_file_info(file_data):
+async def format_file_info(file_data: Dict[str, Any]) -> Dict[str, Any]:
     """Format file information for API response"""
     thumbnails = {}
     if "thumbs" in file_data:
@@ -238,16 +312,22 @@ async def format_file_info(file_data):
     }
 
 
-async def fetch_direct_links(url):
+async def fetch_direct_links(
+    url: str, password: str = ""
+) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
     """Fetch files with direct download links (alternative method)"""
 
     try:
-        files = await fetch_download_link(url)
+        files = await fetch_download_link(url, password)
 
         if isinstance(files, dict) and "error" in files:
             return files
 
-        async with aiohttp.ClientSession(cookies=cookies, headers=headers) as session:
+        async with aiohttp.ClientSession(
+            cookies=cookies,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30, connect=10),
+        ) as session:
             results = []
             for item in files or []:
                 # Ensure each item is a dict; skip otherwise
@@ -327,12 +407,21 @@ async def api():
     """Main API endpoint - fetch file information"""
     try:
         url = request.args.get("url")
+
         if not url:
             return jsonify(
                 {
                     "status": "error",
                     "message": "Missing required parameter: url",
                     "example": "/api?url=https://teraboxshare.com/s/...",
+                }
+            ), 400
+        if not is_valid_share_url(url):
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": "Invalid TeraBox share URL",
+                    "example": "/api?url=https://teraboxshare.com/s/XXXXXXXX",
                 }
             ), 400
 
@@ -358,7 +447,9 @@ async def api():
 
         # Format file information
         if link_data:
-            tasks = [format_file_info(item) for item in link_data]
+            tasks = [
+                format_file_info(item) for item in link_data if isinstance(item, dict)
+            ]
             formatted_files = await asyncio.gather(*tasks)
 
             return jsonify(
@@ -387,6 +478,7 @@ async def api2():
     """Alternative API endpoint - with direct download links"""
     try:
         url = request.args.get("url")
+
         if not url:
             return jsonify(
                 {
@@ -395,11 +487,21 @@ async def api2():
                     "example": "/api2?url=https://teraboxshare.com/s/...",
                 }
             ), 400
+        if not is_valid_share_url(url):
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": "Invalid TeraBox share URL",
+                    "example": "/api2?url=https://teraboxshare.com/s/XXXXXXXX",
+                }
+            ), 400
 
         logging.info(f"API2 request for URL: {url}")
 
+        password = request.args.get("pwd", "")
         # Fetch file data with direct links
-        link_data = await fetch_direct_links(url)
+
+        link_data = await fetch_direct_links(url, password)
 
         # Check if error occurred
         if isinstance(link_data, dict) and "error" in link_data:
@@ -413,12 +515,55 @@ async def api2():
             ), 500
 
         if link_data:
+            # Normalize file objects to match /api shape and include direct_link when available
+            formatted_files = []
+            for item in link_data or []:
+                try:
+                    if not isinstance(item, dict):
+                        continue
+                    filenamestr = item.get("filename") or item.get(
+                        "server_filename", "Unknown"
+                    )
+                    size_h = (
+                        item.get("size")
+                        if isinstance(item.get("size"), str)
+                        else await get_formatted_size(item.get("size", 0))
+                    )
+                    size_b = item.get("size_bytes", item.get("size", 0))
+                    download = (
+                        item.get("direct_link")
+                        or item.get("download_link")
+                        or item.get("link")
+                        or item.get("dlink")
+                        or ""
+                    )
+                    thumbs = {}
+                    thumb_single = item.get("thumbnail") or (
+                        item.get("thumbs") or {}
+                    ).get("url3")
+                    if thumb_single:
+                        thumbs["original"] = thumb_single
+                    formatted = {
+                        "filename": filenamestr,
+                        "size": size_h,
+                        "size_bytes": size_b,
+                        "download_link": download,
+                        "is_directory": item.get("is_directory", False),
+                        "thumbnails": thumbs,
+                        "path": item.get("path", ""),
+                        "fs_id": item.get("fs_id", ""),
+                    }
+                    if item.get("direct_link"):
+                        formatted["direct_link"] = item["direct_link"]
+                    formatted_files.append(formatted)
+                except Exception:
+                    continue
             return jsonify(
                 {
                     "status": "success",
                     "url": url,
-                    "files": link_data,
-                    "total_files": len(link_data),
+                    "files": formatted_files,
+                    "total_files": len(formatted_files),
                     "timestamp": datetime.utcnow().isoformat(),
                 }
             )
@@ -455,7 +600,10 @@ def help_page():
                     "/api2": {
                         "method": "GET",
                         "description": "Fetch files with direct download links",
-                        "parameters": {"url": "Required - TeraBox share link"},
+                        "parameters": {
+                            "url": "Required - TeraBox share link",
+                            "pwd": "Optional - Password for protected links",
+                        },
                         "example": "/api2?url=https://teraboxshare.com/s/1ABC...",
                     },
                 },
