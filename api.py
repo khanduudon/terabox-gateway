@@ -5,10 +5,31 @@ import logging
 import os
 from urllib.parse import parse_qs, urlparse
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union, Set
+from typing import Any, Dict, List, Optional, Union
 
 
-app = Flask(__name__, static_folder="public", static_url_path="/public")
+def create_app() -> Flask:
+    """Create and configure the Flask application.
+
+    This factory keeps a top-level `app` available for Vercel (module import)
+    while allowing local development with `python api.py`.
+    """
+
+    app = Flask(__name__, static_folder="public", static_url_path="/public")
+
+    # Basic CORS for browser clients (no extra dependency)
+    @app.after_request
+    def add_cors_headers(resp: Response) -> Response:
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        return resp
+
+    return app
+
+
+# Create module-level `app` so Vercel/Gunicorn can import it: `from api import app`
+app = create_app()
 
 
 # Basic CORS for browser clients (no extra dependency)
@@ -318,8 +339,11 @@ async def fetch_direct_links(
         if isinstance(files, dict) and "error" in files:
             return files
 
+        # Load cookies for the session (previous code referenced undefined `cookies`)
+        session_cookies = load_cookies()
+
         async with aiohttp.ClientSession(
-            cookies=cookies,
+            cookies=session_cookies,
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=30, connect=10),
         ) as session:
@@ -367,6 +391,58 @@ async def fetch_direct_links(
         return {"error": str(e), "errno": -1}
 
 
+async def _gather_format_file_info(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Helper to run format_file_info concurrently for a list of file dicts."""
+    tasks = [format_file_info(item) for item in files if isinstance(item, dict)]
+    if not tasks:
+        return []
+    results = await asyncio.gather(*tasks)
+    return results
+
+
+async def _normalize_api2_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize items returned by fetch_direct_links to the /api response shape."""
+    out: List[Dict[str, Any]] = []
+    for item in items or []:
+        try:
+            if not isinstance(item, dict):
+                continue
+            filenamestr = item.get("filename") or item.get("server_filename", "Unknown")
+            size_h = (
+                item.get("size")
+                if isinstance(item.get("size"), str)
+                else await get_formatted_size(item.get("size", 0))
+            )
+            size_b = item.get("size_bytes", item.get("size", 0))
+            download = (
+                item.get("direct_link")
+                or item.get("download_link")
+                or item.get("link")
+                or item.get("dlink")
+                or ""
+            )
+            thumbs: Dict[str, str] = {}
+            thumb_single = item.get("thumbnail") or (item.get("thumbs") or {}).get("url3")
+            if thumb_single:
+                thumbs["original"] = thumb_single
+            formatted = {
+                "filename": filenamestr,
+                "size": size_h,
+                "size_bytes": size_b,
+                "download_link": download,
+                "is_directory": item.get("is_directory", False),
+                "thumbnails": thumbs,
+                "path": item.get("path", ""),
+                "fs_id": item.get("fs_id", ""),
+            }
+            if item.get("direct_link"):
+                formatted["direct_link"] = item["direct_link"]
+            out.append(formatted)
+        except Exception:
+            continue
+    return out
+
+
 # =============== API ROUTES ===============
 
 
@@ -398,54 +474,65 @@ def health():
 
 
 @app.route("/api", methods=["GET"])
-async def api():
-    """Main API endpoint - fetch file information"""
+def api():
+    """Main API endpoint - fetch file information.
+
+    This is a synchronous wrapper around the async helpers so the app
+    can run under standard WSGI servers (and Vercel). Internally we
+    call asyncio.run to execute the async logic.
+    """
     try:
         url = request.args.get("url")
 
         if not url:
-            return jsonify(
-                {
-                    "status": "error",
-                    "message": "Missing required parameter: url",
-                    "example": "/api?url=https://teraboxshare.com/s/...",
-                }
-            ), 400
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Missing required parameter: url",
+                        "example": "/api?url=https://teraboxshare.com/s/...",
+                    }
+                ),
+                400,
+            )
         if not is_valid_share_url(url):
-            return jsonify(
-                {
-                    "status": "error",
-                    "message": "Invalid TeraBox share URL",
-                    "example": "/api?url=https://teraboxshare.com/s/XXXXXXXX",
-                }
-            ), 400
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Invalid TeraBox share URL",
+                        "example": "/api?url=https://teraboxshare.com/s/XXXXXXXX",
+                    }
+                ),
+                400,
+            )
 
         password = request.args.get("pwd", "")
         logging.info(f"API request for URL: {url}")
 
-        # Fetch file data
-        link_data = await fetch_download_link(url, password)
+        # Run async fetch in event loop
+        link_data = asyncio.run(fetch_download_link(url, password))
 
         # Check if error occurred
         if isinstance(link_data, dict) and "error" in link_data:
             status_code = 400 if link_data.get("requires_password") else 500
-            return jsonify(
-                {
-                    "status": "error",
-                    "url": url,
-                    "error": link_data["error"],
-                    "errno": link_data.get("errno"),
-                    "message": link_data.get("message", ""),
-                    "requires_password": link_data.get("requires_password", False),
-                }
-            ), status_code
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "url": url,
+                        "error": link_data["error"],
+                        "errno": link_data.get("errno"),
+                        "message": link_data.get("message", ""),
+                        "requires_password": link_data.get("requires_password", False),
+                    }
+                ),
+                status_code,
+            )
 
         # Format file information
         if link_data:
-            tasks = [
-                format_file_info(item) for item in link_data if isinstance(item, dict)
-            ]
-            formatted_files = await asyncio.gather(*tasks)
+            formatted_files = asyncio.run(_gather_format_file_info(link_data))
 
             return jsonify(
                 {
@@ -457,102 +544,73 @@ async def api():
                 }
             )
         else:
-            return jsonify(
-                {"status": "error", "message": "No files found", "url": url}
-            ), 404
+            return (
+                jsonify({"status": "error", "message": "No files found", "url": url}),
+                404,
+            )
 
     except Exception as e:
         logging.error(f"API error: {e}", exc_info=True)
-        return jsonify(
-            {"status": "error", "message": str(e), "url": request.args.get("url", "")}
-        ), 500
+        return (
+            jsonify(
+                {"status": "error", "message": str(e), "url": request.args.get("url", "")} 
+            ),
+            500,
+        )
 
 
 @app.route("/api2", methods=["GET"])
-async def api2():
-    """Alternative API endpoint - with direct download links"""
+def api2():
+    """Alternative API endpoint - with direct download links (sync wrapper)."""
     try:
         url = request.args.get("url")
 
         if not url:
-            return jsonify(
-                {
-                    "status": "error",
-                    "message": "Missing required parameter: url",
-                    "example": "/api2?url=https://teraboxshare.com/s/...",
-                }
-            ), 400
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Missing required parameter: url",
+                        "example": "/api2?url=https://teraboxshare.com/s/...",
+                    }
+                ),
+                400,
+            )
         if not is_valid_share_url(url):
-            return jsonify(
-                {
-                    "status": "error",
-                    "message": "Invalid TeraBox share URL",
-                    "example": "/api2?url=https://teraboxshare.com/s/XXXXXXXX",
-                }
-            ), 400
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Invalid TeraBox share URL",
+                        "example": "/api2?url=https://teraboxshare.com/s/XXXXXXXX",
+                    }
+                ),
+                400,
+            )
 
         logging.info(f"API2 request for URL: {url}")
 
         password = request.args.get("pwd", "")
-        # Fetch file data with direct links
 
-        link_data = await fetch_direct_links(url, password)
+        link_data = asyncio.run(fetch_direct_links(url, password))
 
         # Check if error occurred
         if isinstance(link_data, dict) and "error" in link_data:
-            return jsonify(
-                {
-                    "status": "error",
-                    "url": url,
-                    "error": link_data["error"],
-                    "errno": link_data.get("errno"),
-                }
-            ), 500
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "url": url,
+                        "error": link_data["error"],
+                        "errno": link_data.get("errno"),
+                    }
+                ),
+                500,
+            )
 
         if link_data:
             # Normalize file objects to match /api shape and include direct_link when available
-            formatted_files = []
-            for item in link_data or []:
-                try:
-                    if not isinstance(item, dict):
-                        continue
-                    filenamestr = item.get("filename") or item.get(
-                        "server_filename", "Unknown"
-                    )
-                    size_h = (
-                        item.get("size")
-                        if isinstance(item.get("size"), str)
-                        else await get_formatted_size(item.get("size", 0))
-                    )
-                    size_b = item.get("size_bytes", item.get("size", 0))
-                    download = (
-                        item.get("direct_link")
-                        or item.get("download_link")
-                        or item.get("link")
-                        or item.get("dlink")
-                        or ""
-                    )
-                    thumbs = {}
-                    thumb_single = item.get("thumbnail") or (
-                        item.get("thumbs") or {}
-                    ).get("url3")
-                    if thumb_single:
-                        thumbs["original"] = thumb_single
-                    formatted = {
-                        "filename": filenamestr,
-                        "size": size_h,
-                        "size_bytes": size_b,
-                        "download_link": download,
-                        "is_directory": item.get("is_directory", False),
-                        "thumbnails": thumbs,
-                        "path": item.get("path", ""),
-                        "fs_id": item.get("fs_id", ""),
-                    }
-                    if item.get("direct_link"):
-                        formatted["direct_link"] = item["direct_link"]
-                    formatted_files.append(formatted)
-                except Exception:
-                    continue
+            formatted_files = asyncio.run(_normalize_api2_items(link_data))
             return jsonify(
                 {
                     "status": "success",
@@ -563,15 +621,17 @@ async def api2():
                 }
             )
         else:
-            return jsonify(
-                {"status": "error", "message": "No files found", "url": url}
-            ), 404
+            return (
+                jsonify({"status": "error", "message": "No files found", "url": url}),
+                404,
+            )
 
     except Exception as e:
         logging.error(f"API2 error: {e}", exc_info=True)
-        return jsonify(
-            {"status": "error", "message": str(e), "url": request.args.get("url", "")}
-        ), 500
+        return (
+            jsonify({"status": "error", "message": str(e), "url": request.args.get("url", "")} ),
+            500,
+        )
 
 
 @app.route("/help", methods=["GET"])
