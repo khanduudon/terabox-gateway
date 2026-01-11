@@ -144,3 +144,6 @@ logs/
 # Custom config files
 cookies.json
 .vercel
+
+
+client.py
