@@ -1,134 +1,336 @@
-# TeraBox API (terabot)
+# TeraBox Gateway API
 
-A lightweight Flask-based API and command-line client for extracting file information and direct download links from TeraBox share URLs.
+A lightweight Flask-based API for extracting file information and direct download links from TeraBox share URLs.
 
-This project includes:
-- A web API with endpoints for listing files and retrieving direct links.
-- A command-line client (`client.py`) for interacting with the API from the terminal.
+This project provides:
+- **Web API** with endpoints for listing files and retrieving direct links
+- **Vercel-ready deployment** configuration
+- **Flexible cookie authentication** with support for simple string or JSON formats
 
-The API uses `aiohttp` for asynchronous requests to TeraBox and relies on browser cookies for authentication. These cookies are now managed in a separate `cookies.json` file for easier updates.
+The API uses `aiohttp` for asynchronous requests to TeraBox and relies on browser cookies for authentication.
 
 ---
 
 ## Features
 
-- **Web API**:
-  - `GET /api`: Lists files with metadata, including file size, thumbnails, and paths.
-  - `GET /api2`: In addition to file metadata, it resolves direct download links.
-  - `GET /help`: Provides inline documentation for the API.
-  - `GET /health`: A simple health check endpoint.
-- **Command-Line Client**:
-  - A user-friendly CLI for generating direct download links from Terabox URLs.
-  - Supports configurable API endpoints.
+- **Web API Endpoints**:
+  - `GET /api`: Lists files with metadata, including file size, thumbnails, and paths
+  - `GET /api2`: Retrieves file metadata and resolves direct download links
+  - `GET /help`: Provides inline documentation for the API
+  - `GET /health`: Simple health check endpoint
+  - `GET /`: API information and status
+
+- **Flexible Cookie Configuration**:
+  - Simple string format: Just paste your `ndus` token
+  - Full JSON format: Supports multiple cookie fields
+  - Environment variable or file-based configuration
+
+- **Production Ready**:
+  - CORS enabled for browser clients
+  - Vercel deployment configuration included
+  - Error handling with detailed logging
 
 ---
 
 ## Directory Structure
 
 ```
-terabot/
-├─ endpoints/           # Reserved for future route modularization
-├─ public/              # Static assets (optional)
-├─ api.py               # The main Flask application and API logic
-├─ client.py            # Command-line client for the API
-├─ main.py              # Entry point for running the Flask app
-├─ cookies.json         # Stores browser cookies for authentication
-├─ .gitignore           # Git ignore file
-└─ README.md            # This file
+terabox-gateway/
+├── api.py              # Main Flask application and API logic
+├── main.py             # Entry point for running the Flask app locally
+├── .env                # Environment variables (not tracked in git)
+├── .env.example        # Example environment configuration
+├── requirements.txt    # Python dependencies
+├── pyproject.toml      # Project metadata
+├── vercel.json         # Vercel deployment configuration
+├── .gitignore          # Git ignore file
+├── LICENSE             # MIT License
+├── README.md           # This file
+└── endpoints/          # Reserved for future route modularization
 ```
 
 ---
 
 ## Requirements
 
-- Python 3.9+
-- The following Python packages:
-  - `Flask`
-  - `aiohttp`
-  - `requests`
+- **Python 3.9+**
+- **Dependencies**:
+  - `Flask==2.2.5`
+  - `Werkzeug==2.2.3`
+  - `aiohttp>=3.8,<4`
+  - `requests>=2.31,<3`
 
-You can install the required packages using pip:
+### Installation
+
+Install the required packages using pip:
 
 ```bash
-pip install Flask aiohttp requests
+pip install -r requirements.txt
 ```
 
 ---
 
-## Running the API Locally
+## Quick Start
 
-You can run the API by executing the `main.py` script:
+### 1. Configure Cookies
+
+Create a `.env` file in the project root (copy from `.env.example`):
 
 ```bash
-python terabot/main.py
+cp .env.example .env
 ```
 
-The server will be accessible at `http://localhost:5000`.
+Add your TeraBox `ndus` cookie token to `.env`:
+
+**Option 1: Simple String Format (Recommended)**
+```env
+COOKIE_JSON=YdPCtvYteHui3XC6demNk-M2HgRzVrnh0txZQG6X
+```
+
+**Option 2: Full JSON Format**
+```env
+COOKIE_JSON={"ndus": "YdPCtvYteHui3XC6demNk-M2HgRzVrnh0txZQG6X", "other": "value"}
+```
+
+The API automatically detects the format and handles it accordingly.
+
+### 2. Run the API Locally
+
+Execute the `main.py` script:
+
+```bash
+python main.py
+```
+
+The server will start at:
+- `http://localhost:5000`
+- `http://0.0.0.0:5000` (accessible from network)
 
 ---
 
-## Updating Cookies (Important)
+## Getting Your TeraBox Cookies
 
-The API requires valid browser cookies to interact with TeraBox. These are now stored in `cookies.json`. To update them:
+The API requires a valid `ndus` cookie to authenticate with TeraBox:
 
-1.  Log in to [terabox.com](https://www.terabox.com).
-2.  Open your browser's developer tools (usually F12) and go to the "Application" (or "Storage") tab.
-3.  Find the cookies for `terabox.com` and copy the values for the keys already present in `cookies.json`.
-4.  Paste the new values into `cookies.json`.
-5.  Restart the API for the changes to take effect.
+1. Log in to [terabox.com](https://www.terabox.com) or [1024terabox.com](https://1024terabox.com)
+2. Open your browser's Developer Tools (press `F12`)
+3. Go to the **Application** or **Storage** tab
+4. Navigate to **Cookies** → Select the TeraBox domain
+5. Find the cookie named `ndus` and copy its **Value**
+6. Paste the value into your `.env` file as shown above
 
-You can also configure cookies using environment variables:
-- `TERABOX_COOKIES_JSON`: A JSON string of cookie key-value pairs.
-- `TERABOX_COOKIES_FILE`: The path to a JSON file containing the cookies.
+**Note**: Cookies expire periodically. If you start getting authentication errors, refresh your cookies.
 
 ---
 
 ## API Usage
 
-The API validates that the provided URL is a valid TeraBox share link.
+### Endpoints
 
-- **GET `/`**: Returns metadata about the API.
-- **GET `/health`**: Performs a simple health check.
-- **GET `/help`**: Displays API documentation.
-- **GET `/api?url=<share_url>[&pwd=<password>]`**: Retrieves file information for a given TeraBox link.
-- **GET `/api2?url=<share_url>`**: Retrieves file information and resolves direct download links.
+#### `GET /` - API Information
+Returns metadata about the API, available endpoints, and status.
 
-**Example Request:**
+```bash
+curl http://localhost:5000/
+```
 
+#### `GET /health` - Health Check
+Simple health check endpoint that returns the current status.
+
+```bash
+curl http://localhost:5000/health
+```
+
+#### `GET /help` - API Documentation
+Provides detailed inline documentation and usage examples.
+
+```bash
+curl http://localhost:5000/help
+```
+
+#### `GET /api` - Get File Information
+Retrieves file metadata for a TeraBox share link.
+
+**Parameters**:
+- `url` (required): TeraBox share URL
+- `pwd` (optional): Password for protected links
+
+**Example**:
+```bash
+curl "http://localhost:5000/api?url=https://1024terabox.com/s/1LNr3tyl5pI5KUM8BecGtyQ"
+```
+
+**Response** (success):
+```json
+{
+  "files": [
+    {
+      "download_link": "https://d.terabox.app/file/...?fid=xxx&dstime=xxx&sign=xxx...",
+      "filename": "VID_202.ts",
+      "fs_id": "305771137601214",
+      "is_directory": false,
+      "path": "/2025-10-06 01-28/VID_202.ts",
+      "size": "6.57 MB",
+      "size_bytes": 6891328,
+      "thumbnails": {
+        "60x60": "https://data.terabox.app/thumbnail/...?size=c60_u60&quality=100...",
+        "140x90": "https://data.terabox.app/thumbnail/...?size=c140_u90&quality=100...",
+        "360x270": "https://data.terabox.app/thumbnail/...?size=c360_u270&quality=100...",
+        "850x580": "https://data.terabox.app/thumbnail/...?size=c850_u580&quality=100..."
+      }
+    }
+  ],
+  "status": "success",
+  "timestamp": "2026-01-17T11:30:32.672789",
+  "total_files": 1,
+  "url": "https://1024terabox.com/s/1LNr3tyl5pI5KUM8BecGtyQ"
+}
+```
+
+#### `GET /api2` - Get Direct Download Links
+Retrieves file metadata and resolves direct download links by following redirects.
+
+**Parameters**:
+- `url` (required): TeraBox share URL
+- `pwd` (optional): Password for protected links
+
+**Example**:
 ```bash
 curl "http://localhost:5000/api2?url=https://teraboxshare.com/s/XXXXXXXX"
 ```
 
+**Response**: Similar to `/api` but includes `direct_link` field for each file.
+
 ---
 
-## Command-Line Client (`client.py`)
+## Supported TeraBox Domains
 
-The `client.py` script provides a simple way to get a direct download link from a Terabox URL.
+The API validates and supports the following TeraBox domains:
+- `terabox.app`
+- `teraboxshare.com`
+- `terabox.com`
+- `1024terabox.com`
 
-**Usage:**
+Both `http://` and `https://` protocols are supported.
 
-```bash
-python terabot/client.py
-```
+---
 
-The script will prompt you to enter a Terabox link. You can also provide the link as a command-line argument:
+## Environment Variables
 
-```bash
-python terabot/client.py https://teraboxshare.com/s/XXXXXXXX
-```
+You can configure the API using environment variables in your `.env` file:
 
-By default, the client uses a public API, but you can configure it to use your local instance by creating an `apiurl.txt` file in the same directory with the URL of your local server (e.g., `http://localhost:5000`).
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `COOKIE_JSON` | TeraBox cookies (simple string or JSON) | - |
+| `TERABOX_COOKIES_JSON` | Alternative: JSON string of cookies | - |
+| `TERABOX_COOKIES_FILE` | Alternative: Path to cookies JSON file | - |
+| `HOST` | Server host address | `0.0.0.0` |
+| `PORT` | Server port | `5000` |
+| `FLASK_DEBUG` | Enable Flask debug mode (`1` or `0`) | `0` |
+
+**Cookie Priority**:
+1. `COOKIE_JSON` (from `.env`)
+2. `TERABOX_COOKIES_JSON`
+3. `TERABOX_COOKIES_FILE`
+
+---
+
+## Deployment
+
+### Deploy to Vercel
+
+This project is configured for easy deployment to Vercel:
+
+1. Install Vercel CLI (optional):
+   ```bash
+   npm i -g vercel
+   ```
+
+2. Deploy:
+   ```bash
+   vercel
+   ```
+
+3. Set environment variables in Vercel dashboard:
+   - Go to your project settings
+   - Add `COOKIE_JSON` with your `ndus` token value
+
+The `vercel.json` configuration is already set up for you.
 
 ---
 
 ## Troubleshooting
 
-- **400141 Error**: This means the link is password-protected. Use the `&pwd=` query parameter to provide the password.
-- **HTTP 5xx Errors**: This could indicate that your cookies have expired. Follow the steps in the "Updating Cookies" section to refresh them.
-- **No Direct Link**: If the API fails to return a direct link, the cookies may be invalid, or the link may have expired.
+### Common Issues
+
+**Error 400141 - Verification Required**
+- The link is password-protected
+- Solution: Add `&pwd=PASSWORD` parameter to your request
+
+**HTTP 5xx Errors**
+- Your cookies may have expired
+- Solution: Update your `ndus` cookie following the steps above
+
+**No Direct Link Returned**
+- Cookies are invalid or expired
+- The share link itself has expired
+- Solution: Refresh cookies or verify the link is still active
+
+**"Cookies not loaded" Warning**
+- `.env` file is missing or `COOKIE_JSON` is not set
+- Solution: Create `.env` file and add your `ndus` token
+
+**Authentication Failures**
+- The `ndus` token is invalid or malformed
+- Solution: Copy the token again from your browser, ensuring no extra spaces
+
+---
+
+## Development
+
+### Running in Debug Mode
+
+Set `FLASK_DEBUG=1` in your `.env` file:
+
+```env
+FLASK_DEBUG=1
+```
+
+This enables:
+- Auto-reload on code changes
+- Detailed error pages
+- Interactive debugger
+
+### Logging
+
+The API uses Python's `logging` module with INFO level by default. Logs include:
+- Request URLs and parameters
+- Cookie loading status (format detection)
+- API responses and errors
+- Share page tokens and authentication status
 
 ---
 
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+---
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+---
+
+## Contact
+
+For questions or support, contact [@Saahiyo](https://github.com/Saahiyo)
+
+---
+
+## Acknowledgments
+
+- Built with Flask and aiohttp for efficient async operations
+- Designed for seamless Vercel deployment
+- Supports multiple TeraBox domains and share URL formats
